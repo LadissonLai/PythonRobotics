@@ -449,7 +449,7 @@ def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state):
 
 def calc_speed_profile(cx, cy, cyaw, target_speed):
 
-    speed_profile = [target_speed] * len(cx)
+    speed_profile = [target_speed] * len(cx) # list长度为cx的长度
     direction = 1.0  # forward
 
     # Set stop point
@@ -556,9 +556,9 @@ def main():
     # cx, cy, cyaw, ck = get_straight_course2(dl)
     # cx, cy, cyaw, ck = get_straight_course3(dl)
     # cx, cy, cyaw, ck = get_forward_course(dl)
-    cx, cy, cyaw, ck = get_switch_back_course(dl)
+    cx, cy, cyaw, ck = get_switch_back_course(dl) # 计算路径，ck为曲率
 
-    sp = calc_speed_profile(cx, cy, cyaw, TARGET_SPEED)
+    sp = calc_speed_profile(cx, cy, cyaw, TARGET_SPEED) # 对路径求导，计算每个点的速度，即将路径转化为轨迹
 
     initial_state = State(x=cx[0], y=cy[0], yaw=cyaw[0], v=0.0)
 
@@ -589,7 +589,7 @@ def main2():
     print(__file__ + " start!!")
 
     dl = 1.0  # course tick
-    cx, cy, cyaw, ck = get_straight_course3(dl)
+    cx, cy, cyaw, ck = get_straight_course3(dl) 
 
     sp = calc_speed_profile(cx, cy, cyaw, TARGET_SPEED)
 
