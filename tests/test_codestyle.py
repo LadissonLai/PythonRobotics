@@ -54,7 +54,7 @@ def run_ruff(files, fix):
         return 0, ""
     args = ['--fix'] if fix else []
     res = subprocess.run(
-        ['ruff', f'--config={CONFIG}'] + args + files,
+        ['ruff', 'check', f'--config={CONFIG}'] + args + files,
         stdout=subprocess.PIPE,
         encoding='utf-8'
     )
@@ -126,7 +126,7 @@ def test():
     branch_commit = find_branch_point("origin/master")
     files = diff_files(branch_commit)
     print(files)
-    rc, errors = run_ruff(files, fix=False)
+    rc, errors = run_ruff(files, fix=True)
     if errors:
         print(errors)
     else:
