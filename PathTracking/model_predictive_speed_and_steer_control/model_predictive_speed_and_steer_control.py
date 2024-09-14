@@ -20,7 +20,7 @@ from PathPlanning.CubicSpline import cubic_spline_planner
 
 NX = 4  # x = x, y, v, yaw
 NU = 2  # a = [accel, steer]
-T = 5  # horizon length
+T = 5  # horizon length 预测区间长度
 
 # mpc parameters
 R = np.diag([0.01, 0.01])  # input cost matrix
@@ -47,7 +47,7 @@ BACKTOWHEEL = 1.0  # [m]
 WHEEL_LEN = 0.3  # [m]
 WHEEL_WIDTH = 0.2  # [m]
 TREAD = 0.7  # [m]
-WB = 2.5  # [m]
+WB = 2.5  # [m] 轴距
 
 MAX_STEER = np.deg2rad(45.0)  # maximum steering angle [rad]
 MAX_DSTEER = np.deg2rad(30.0)  # maximum steering speed [rad/s]
@@ -76,7 +76,9 @@ def pi_2_pi(angle):
 
 
 def get_linear_model_matrix(v, phi, delta):
-
+    """
+        构建线性的状态空间方程，A, B, C
+    """
     A = np.zeros((NX, NX))
     A[0, 0] = 1.0
     A[1, 1] = 1.0
@@ -223,10 +225,11 @@ def predict_motion(x0, oa, od, xref):
 def iterative_linear_mpc_control(xref, x0, dref, oa, od):
     """
     MPC control with updating operational point iteratively
+    oa, od: 就是MPC计算出来的控制量，oa是加速度，od是转向角
     """
     ox, oy, oyaw, ov = None, None, None, None
 
-    if oa is None or od is None:
+    if oa is None or od is None: # 设置初始值
         oa = [0.0] * T
         od = [0.0] * T
 
@@ -248,9 +251,9 @@ def linear_mpc_control(xref, xbar, x0, dref):
     linear mpc control
 
     xref: reference point
-    xbar: operational point
+    xbar: operational point，泰勒公式的展开点
     x0: initial state
-    dref: reference steer angle
+    dref: reference steer angle delta
     """
 
     x = cvxpy.Variable((NX, T + 1))
@@ -265,8 +268,7 @@ def linear_mpc_control(xref, xbar, x0, dref):
         if t != 0:
             cost += cvxpy.quad_form(xref[:, t] - x[:, t], Q)
 
-        A, B, C = get_linear_model_matrix(
-            xbar[2, t], xbar[3, t], dref[0, t])
+        A, B, C = get_linear_model_matrix(xbar[2, t], xbar[3, t], dref[0, t])
         constraints += [x[:, t + 1] == A @ x[:, t] + B @ u[:, t] + C]
 
         if t < (T - 1):
@@ -358,7 +360,7 @@ def check_goal(state, goal, tind, nind):
     return False
 
 
-def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state):
+def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state: State):
     """
     Simulation
 
@@ -386,10 +388,10 @@ def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state):
     y = [state.y]
     yaw = [state.yaw]
     v = [state.v]
-    t = [0.0]
-    d = [0.0]
-    a = [0.0]
-    target_ind, _ = calc_nearest_index(state, cx, cy, cyaw, 0)
+    t = [0.0] # 时间
+    d = [0.0] # 转向角 delta
+    a = [0.0] # 加速度 a
+    target_ind, _ = calc_nearest_index(state, cx, cy, cyaw, 0) # 获取最近的点的索引，以及距离
 
     odelta, oa = None, None
 
@@ -397,16 +399,16 @@ def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state):
 
     while MAX_TIME >= time:
         xref, target_ind, dref = calc_ref_trajectory(
-            state, cx, cy, cyaw, ck, sp, dl, target_ind)
+            state, cx, cy, cyaw, ck, sp, dl, target_ind) # 非常重要
 
         x0 = [state.x, state.y, state.v, state.yaw]  # current state
 
         oa, odelta, ox, oy, oyaw, ov = iterative_linear_mpc_control(
-            xref, x0, dref, oa, odelta)
+            xref, x0, dref, oa, odelta) # 这里是MPC控制了
 
         di, ai = 0.0, 0.0
         if odelta is not None:
-            di, ai = odelta[0], oa[0]
+            di, ai = odelta[0], oa[0] # 只使用第一组控制量
             state = update_state(state, ai, di)
 
         time = time + DT
@@ -430,16 +432,17 @@ def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state):
                     lambda event: [exit(0) if event.key == 'escape' else None])
             if ox is not None:
                 plt.plot(ox, oy, "xr", label="MPC")
-            plt.plot(cx, cy, "-r", label="course")
-            plt.plot(x, y, "ob", label="trajectory")
+            plt.plot(cx, cy, "-r", label="course") # 参考轨迹
+            plt.plot(x, y, "ob", label="trajectory") # 实际轨迹
             plt.plot(xref[0, :], xref[1, :], "xk", label="xref")
             plt.plot(cx[target_ind], cy[target_ind], "xg", label="target")
             plot_car(state.x, state.y, state.yaw, steer=di)
             plt.axis("equal")
             plt.grid(True)
+            plt.legend()
             plt.title("Time[s]:" + str(round(time, 2))
                       + ", speed[km/h]:" + str(round(state.v * 3.6, 2)))
-            plt.pause(0.0001)
+            plt.pause(0.01)
 
     return t, x, y, yaw, v, d, a
 
@@ -549,14 +552,14 @@ def main():
     print(__file__ + " start!!")
     start = time.time()
 
-    dl = 1.0  # course tick
+    dl = 1.0  # course tick 参考轨迹的采样间隔
     # cx, cy, cyaw, ck = get_straight_course(dl)
     # cx, cy, cyaw, ck = get_straight_course2(dl)
     # cx, cy, cyaw, ck = get_straight_course3(dl)
     # cx, cy, cyaw, ck = get_forward_course(dl)
-    cx, cy, cyaw, ck = get_switch_back_course(dl) # 计算路径，ck为曲率
+    cx, cy, cyaw, ck = get_switch_back_course(dl) # 参考轨迹，包括x, y, yaw, 曲率
 
-    sp = calc_speed_profile(cx, cy, cyaw, TARGET_SPEED) # 对路径求导，计算每个点的速度，即将路径转化为轨迹
+    sp = calc_speed_profile(cx, cy, cyaw, TARGET_SPEED) # 参考速度
 
     initial_state = State(x=cx[0], y=cy[0], yaw=cyaw[0], v=0.0)
 
