@@ -222,10 +222,13 @@ def predict_motion(x0, oa, od, xref):
     return xbar
 
 
-def iterative_linear_mpc_control(xref, x0, dref, oa, od):
+def iterative_linear_mpc_control(xref: np.array, x0: list, dref, oa, od):
     """
     MPC control with updating operational point iteratively
     oa, od: 就是MPC计算出来的控制量，oa是加速度，od是转向角
+    xref: (4, T+1)
+    x0: list, 4
+    dref: list, (T+1,)
     """
     ox, oy, oyaw, ov = None, None, None, None
 
@@ -234,7 +237,7 @@ def iterative_linear_mpc_control(xref, x0, dref, oa, od):
         od = [0.0] * T
 
     for i in range(MAX_ITER):
-        xbar = predict_motion(x0, oa, od, xref)
+        xbar = predict_motion(x0, oa, od, xref) # xbar是泰勒展开的点
         poa, pod = oa[:], od[:]
         oa, od, ox, oy, oyaw, ov = linear_mpc_control(xref, xbar, x0, dref)
         du = sum(abs(oa - poa)) + sum(abs(od - pod))  # calc u change value
@@ -253,7 +256,7 @@ def linear_mpc_control(xref, xbar, x0, dref):
     xref: reference point
     xbar: operational point，泰勒公式的展开点
     x0: initial state
-    dref: reference steer angle delta
+    dref: reference steer angle delta？有什么用
     """
 
     x = cvxpy.Variable((NX, T + 1))
@@ -262,20 +265,22 @@ def linear_mpc_control(xref, xbar, x0, dref):
     cost = 0.0
     constraints = []
 
+    A, B, C = get_linear_model_matrix(xbar[2, 0], xbar[3, 0], dref[0, 0]) # 写在外面更好，默认这个模型是线性的
+    # 过程代价
     for t in range(T):
         cost += cvxpy.quad_form(u[:, t], R)
 
         if t != 0:
             cost += cvxpy.quad_form(xref[:, t] - x[:, t], Q)
 
-        A, B, C = get_linear_model_matrix(xbar[2, t], xbar[3, t], dref[0, t])
+        # A, B, C = get_linear_model_matrix(xbar[2, t], xbar[3, t], dref[0, t]) # 获取线性模型
         constraints += [x[:, t + 1] == A @ x[:, t] + B @ u[:, t] + C]
 
         if t < (T - 1):
             cost += cvxpy.quad_form(u[:, t + 1] - u[:, t], Rd)
             constraints += [cvxpy.abs(u[1, t + 1] - u[1, t]) <=
                             MAX_DSTEER * DT]
-
+    # 终点代价
     cost += cvxpy.quad_form(xref[:, T] - x[:, T], Qf)
 
     constraints += [x[:, 0] == x0]
@@ -316,13 +321,12 @@ def calc_ref_trajectory(state, cx, cy, cyaw, ck, sp, dl, pind):
     xref[1, 0] = cy[ind]
     xref[2, 0] = sp[ind]
     xref[3, 0] = cyaw[ind]
-    dref[0, 0] = 0.0  # steer operational point should be 0
-
+    dref[0, 0] = 0.0  # steer operational point should be 0。由于这里采用的运动模型是DR航迹推算，车辆在DT时间内做匀速直线运动，
     travel = 0.0
 
     for i in range(T + 1):
         travel += abs(state.v) * DT
-        dind = int(round(travel / dl))
+        dind = int(round(travel / dl)) # dl是参考轨迹的路径分段长度
 
         if (ind + dind) < ncourse:
             xref[0, i] = cx[ind + dind]
@@ -366,18 +370,17 @@ def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state: State):
 
     cx: course x position list
     cy: course y position list
-    cy: course yaw position list
+    cy: course yaw position list 目前猜测，角度范围是 0-2pi
     ck: course curvature list
     sp: speed profile
-    dl: course tick [m]
-
+    dl: course tick [m]？？存疑，跟踪的均匀分段路径点的间隔长度。
     """
 
     goal = [cx[-1], cy[-1]]
 
     state = initial_state
 
-    # initial yaw compensation
+    # initial yaw compensation，保证初始化的角度和参考轨迹的角度插值在-pi到pi之间
     if state.yaw - cyaw[0] >= math.pi:
         state.yaw -= math.pi * 2.0
     elif state.yaw - cyaw[0] <= -math.pi:
@@ -388,23 +391,23 @@ def do_simulation(cx, cy, cyaw, ck, sp, dl, initial_state: State):
     y = [state.y]
     yaw = [state.yaw]
     v = [state.v]
-    t = [0.0] # 时间
+    t = [0.0] # 时间，真实时间
     d = [0.0] # 转向角 delta
     a = [0.0] # 加速度 a
-    target_ind, _ = calc_nearest_index(state, cx, cy, cyaw, 0) # 获取最近的点的索引，以及距离
+    target_ind, _ = calc_nearest_index(state, cx, cy, cyaw, 0) # 获取最近的点的索引，这就是要追踪的目标点。在一个DT内
 
-    odelta, oa = None, None
+    odelta, oa = None, None # 控制量的输出结果
 
-    cyaw = smooth_yaw(cyaw)
+    cyaw = smooth_yaw(cyaw) # 先不管，太细节了。
 
     while MAX_TIME >= time:
         xref, target_ind, dref = calc_ref_trajectory(
-            state, cx, cy, cyaw, ck, sp, dl, target_ind) # 非常重要
+            state, cx, cy, cyaw, ck, sp, dl, target_ind) # xref表示MPC预测N步的参考轨迹，dref是转向角的参考值
 
         x0 = [state.x, state.y, state.v, state.yaw]  # current state
 
         oa, odelta, ox, oy, oyaw, ov = iterative_linear_mpc_control(
-            xref, x0, dref, oa, odelta) # 这里是MPC控制了
+            xref, x0, dref, oa, odelta) # 这里是MPC控制了，输入：参考轨迹、初始状态、转向角参考值、接收控制量的变量
 
         di, ai = 0.0, 0.0
         if odelta is not None:
@@ -477,7 +480,6 @@ def calc_speed_profile(cx, cy, cyaw, target_speed):
 
 
 def smooth_yaw(yaw):
-
     for i in range(len(yaw) - 1):
         dyaw = yaw[i + 1] - yaw[i]
 
@@ -557,11 +559,16 @@ def main():
     # cx, cy, cyaw, ck = get_straight_course2(dl)
     # cx, cy, cyaw, ck = get_straight_course3(dl)
     # cx, cy, cyaw, ck = get_forward_course(dl)
-    cx, cy, cyaw, ck = get_switch_back_course(dl) # 参考轨迹，包括x, y, yaw, 曲率
+    # 这里计算的参考轨迹有个小技巧，通过把yaw角旋转180度，就是沿着轨迹的反方向，也就成了倒车。
+    cx, cy, cyaw, ck = get_switch_back_course(dl) # 参考轨迹: 包括x, y, yaw, 曲率。
 
-    sp = calc_speed_profile(cx, cy, cyaw, TARGET_SPEED) # 参考速度
+    print(len(cx),len(cy),len(cyaw),len(ck)) # 162 162 162 162
 
-    initial_state = State(x=cx[0], y=cy[0], yaw=cyaw[0], v=0.0)
+    sp = calc_speed_profile(cx, cy, cyaw, TARGET_SPEED) # 设置参考速度，常数，终点位置速度为0，至此参考轨迹就准备好了。
+
+    print(len(sp)) # 162
+
+    initial_state = State(x=cx[0]-5, y=cy[0]-5, yaw=cyaw[0], v=0.0) # 初始状态
 
     t, x, y, yaw, v, d, a = do_simulation(
         cx, cy, cyaw, ck, sp, dl, initial_state)
